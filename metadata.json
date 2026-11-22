@@ -1,0 +1,6 @@
+{
+  "name": "ReelGauge",
+  "description": "Battery-optimized Instagram Reel counter with a top-center floating progress pill, persistent daily usage notification, and mindful streak insights.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

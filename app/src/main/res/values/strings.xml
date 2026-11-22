@@ -1,0 +1,31 @@
+<resources>
+    <string name="app_name">ReelGauge</string>
+    <string name="accessibility_service_label">ReelGauge Reel Detector</string>
+    <string name="accessibility_service_description">Detects Instagram Reels scroll transitions only while Instagram is open to update your top-center reel counter pill and daily usage notification. No screen content is ever uploaded or stored off-device.</string>
+
+    <string name="notification_channel_name">Daily Reel Usage</string>
+    <string name="notification_channel_description">Silent ongoing notification showing your daily Instagram Reel count and quick snooze controls.</string>
+
+    <string name="nav_overview">Overview</string>
+    <string name="nav_history">History</string>
+    <string name="nav_settings">Settings</string>
+
+    <string name="status_active">Tracking Active</string>
+    <string name="status_paused">Paused</string>
+    <string name="status_setup_needed">Setup Needed</string>
+
+    <string name="setup_title">Permission Readiness</string>
+    <string name="setup_subtitle">Grant these three permissions so ReelGauge can count reels efficiently with zero background polling.</string>
+    <string name="perm_notifications_title">Daily Usage Notification</string>
+    <string name="perm_notifications_desc">Shows your daily reel total and quick 15m pause button.</string>
+    <string name="perm_overlay_title">Top-Center Floating Pill</string>
+    <string name="perm_overlay_desc">Displays a compact session counter pill while Instagram is open.</string>
+    <string name="perm_accessibility_title">Instagram Reel Detection</string>
+    <string name="perm_accessibility_desc">Event-driven scroll listener scoped strictly to Instagram.</string>
+    <string name="action_enable">Enable</string>
+    <string name="action_granted">Active</string>
+
+    <string name="action_pause_15m">Pause 15m</string>
+    <string name="action_resume">Resume</string>
+    <string name="action_reset_today">Reset Today</string>
+</resources>
