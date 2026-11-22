@@ -12,15 +12,17 @@ import com.example.detector.InstagramNodeInspector
 import com.example.detector.ReelScrollDetector
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 /**
  * Battery-optimized AccessibilityService:
  * - When Instagram is closed, listens ONLY to TYPE_WINDOW_STATE_CHANGED (0 scroll/content wakeups).
- * - When Instagram is active, enables coalesced scroll/content events (250ms timeout).
- * - Immediately removes the floating overlay on Instagram exit or SCREEN_OFF.
+ * - When Instagram is active, enables coalesced scroll/content events (200ms timeout).
+ * - Debounces overlay hiding across transient system/IME windows so the pill never blinks.
  */
 class ReelAccessibilityService : AccessibilityService() {
   private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
@@ -28,11 +30,16 @@ class ReelAccessibilityService : AccessibilityService() {
 
   private var isInInstagramMode = false
   private var lastOverlayBumpTimeMs = 0L
+  private var lastReelsConfirmedMs = 0L
+  private var lastContentInspectionMs = 0L
+  private var lastReelCountedMs = 0L
+  private var pendingExitJob: Job? = null
 
   private val screenOffReceiver =
     object : BroadcastReceiver() {
       override fun onReceive(context: Context?, intent: Intent?) {
         if (intent?.action == Intent.ACTION_SCREEN_OFF) {
+          pendingExitJob?.cancel()
           exitInstagramMode()
         }
       }
@@ -51,7 +58,6 @@ class ReelAccessibilityService : AccessibilityService() {
 
     registerReceiver(screenOffReceiver, IntentFilter(Intent.ACTION_SCREEN_OFF))
 
-    // React to live preference/snooze updates while Instagram is open
     serviceScope.launch {
       coordinator.liveState.collect { state ->
         if (state.isInstagramForeground &&
@@ -59,7 +65,8 @@ class ReelAccessibilityService : AccessibilityService() {
           !state.isSnoozed
         ) {
           val now = System.currentTimeMillis()
-          val shouldBump = now - lastOverlayBumpTimeMs < 350L
+          val shouldBump = lastOverlayBumpTimeMs != 0L && (now - lastOverlayBumpTimeMs < 500L)
+          lastOverlayBumpTimeMs = 0L
           overlayController.showOrUpdate(
             sessionReels = state.sessionReels,
             todayTotal = state.todayTotal,
@@ -79,14 +86,26 @@ class ReelAccessibilityService : AccessibilityService() {
     val pkg = event.packageName?.toString() ?: return
 
     if (pkg != ReelScrollDetector.INSTAGRAM_PACKAGE) {
-      // Ignore transient system UI (e.g., volume slider) so overlay doesn't flicker
       if (event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED &&
-        pkg != SYSTEM_UI_PACKAGE
+        !isTransientSystemPackage(pkg)
       ) {
-        exitInstagramMode()
+        // Confirm Instagram is genuinely no longer the active root window before scheduling hide
+        val activeRootPkg =
+          try {
+            rootInActiveWindow?.packageName?.toString()
+          } catch (_: Exception) {
+            null
+          }
+        if (activeRootPkg != ReelScrollDetector.INSTAGRAM_PACKAGE) {
+          scheduleExitInstagramMode()
+        }
       }
       return
     }
+
+    // Cancel any pending exit immediately when Instagram events arrive
+    pendingExitJob?.cancel()
+    pendingExitJob = null
 
     if (!isInInstagramMode) {
       enterInstagramMode()
@@ -98,28 +117,52 @@ class ReelAccessibilityService : AccessibilityService() {
       return
     }
 
-    if (event.eventType == AccessibilityEvent.TYPE_VIEW_SCROLLED ||
-      event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED
-    ) {
-      val root = try {
-        rootInActiveWindow
-      } catch (_: Exception) {
-        null
+    val now = System.currentTimeMillis()
+    val eventType = event.eventType
+
+    // Skip expensive window tree inspection during post-reel cooldown on content-changed ticks
+    if (eventType == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED) {
+      if (now - lastReelCountedMs < 1050L || now - lastContentInspectionMs < 350L) {
+        return
       }
-      val snapshot = InstagramNodeInspector.inspect(event, root)
+      lastContentInspectionMs = now
+    }
+
+    if (eventType == AccessibilityEvent.TYPE_VIEW_SCROLLED ||
+      eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED ||
+      eventType == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED
+    ) {
+      val root =
+        try {
+          rootInActiveWindow
+        } catch (_: Exception) {
+          null
+        }
+      val recentlyInReels = now - lastReelsConfirmedMs < 3000L
+      val snapshot = InstagramNodeInspector.inspect(event, root, recentlyInReels, now)
+
+      if (snapshot.isExplicitNonReelsContext) {
+        lastReelsConfirmedMs = 0L
+      } else if (snapshot.isReelsContext) {
+        lastReelsConfirmedMs = now
+      }
+
       if (scrollDetector.evaluate(snapshot)) {
-        lastOverlayBumpTimeMs = System.currentTimeMillis()
+        lastReelCountedMs = now
+        lastOverlayBumpTimeMs = now
         coordinator.recordReelScrolled()
       }
     }
   }
 
   override fun onInterrupt() {
+    pendingExitJob?.cancel()
     exitInstagramMode()
   }
 
   override fun onDestroy() {
     super.onDestroy()
+    pendingExitJob?.cancel()
     try {
       unregisterReceiver(screenOffReceiver)
     } catch (_: Exception) {
@@ -131,25 +174,33 @@ class ReelAccessibilityService : AccessibilityService() {
 
   private fun enterInstagramMode() {
     isInInstagramMode = true
+    lastReelsConfirmedMs = 0L
     scrollDetector.resetSession()
     setEventScope(activeInstagram = true)
     coordinator.onInstagramEntered()
+  }
 
-    val state = coordinator.liveState.value
-    if (state.preferences.overlayEnabled && !state.isSnoozed) {
-      overlayController.showOrUpdate(
-        sessionReels = state.sessionReels,
-        todayTotal = state.todayTotal,
-        dailyLimit = state.preferences.dailyLimit,
-        thresholdLevel = state.thresholdLevel,
-        animateBump = false,
-      )
-    }
+  private fun scheduleExitInstagramMode() {
+    if (!isInInstagramMode || pendingExitJob?.isActive == true) return
+    pendingExitJob =
+      serviceScope.launch {
+        delay(500L)
+        val activeRootPkg =
+          try {
+            rootInActiveWindow?.packageName?.toString()
+          } catch (_: Exception) {
+            null
+          }
+        if (activeRootPkg != ReelScrollDetector.INSTAGRAM_PACKAGE) {
+          exitInstagramMode()
+        }
+      }
   }
 
   private fun exitInstagramMode() {
     if (!isInInstagramMode) return
     isInInstagramMode = false
+    lastReelsConfirmedMs = 0L
     scrollDetector.resetSession()
     setEventScope(activeInstagram = false)
     overlayController.hide()
@@ -167,12 +218,22 @@ class ReelAccessibilityService : AccessibilityService() {
         AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED
       }
     info.feedbackType = AccessibilityServiceInfo.FEEDBACK_GENERIC
-    info.notificationTimeout = 250L
+    info.notificationTimeout = 200L
     info.flags = AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS
     serviceInfo = info
   }
 
+  private fun isTransientSystemPackage(pkg: String): Boolean {
+    return pkg == SYSTEM_UI_PACKAGE ||
+      pkg == ANDROID_OS_PACKAGE ||
+      pkg == applicationContext.packageName ||
+      pkg.contains("inputmethod") ||
+      pkg.contains("keyboard") ||
+      pkg.contains("gboard")
+  }
+
   companion object {
     private const val SYSTEM_UI_PACKAGE = "com.android.systemui"
+    private const val ANDROID_OS_PACKAGE = "android"
   }
 }

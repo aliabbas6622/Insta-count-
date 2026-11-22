@@ -26,7 +26,7 @@ import com.example.data.ThresholdLevel
 
 /**
  * Ultra-lightweight native Android View overlay managed by WindowManager.
- * Uses zero Compose recomposition or idle frame ticks—invalidates only when reel counts change.
+ * Deduplicates redundant updates so the floating pill never flickers or blinks.
  */
 class OverlayPillController(private val context: Context) {
   private val windowManager =
@@ -36,6 +36,11 @@ class OverlayPillController(private val context: Context) {
   private var ringView: CompactRingGlyphView? = null
   private var countText: TextView? = null
   private var isShowing = false
+
+  private var lastSessionReels = Int.MIN_VALUE
+  private var lastTodayTotal = Int.MIN_VALUE
+  private var lastDailyLimit = Int.MIN_VALUE
+  private var lastThresholdLevel: ThresholdLevel? = null
 
   fun canDrawOverlays(): Boolean = Settings.canDrawOverlays(context)
 
@@ -54,16 +59,33 @@ class OverlayPillController(private val context: Context) {
     ensureViewCreated()
     val container = pillContainer ?: return
 
-    val progress =
-      if (dailyLimit <= 0) 0.35f else (todayTotal.toFloat() / dailyLimit.toFloat()).coerceIn(0f, 1f)
-    val accent = accentColorFor(thresholdLevel)
+    val stateChanged =
+      sessionReels != lastSessionReels ||
+        todayTotal != lastTodayTotal ||
+        dailyLimit != lastDailyLimit ||
+        thresholdLevel != lastThresholdLevel
 
-    ringView?.updateState(progress = progress, accentColor = accent)
-    countText?.text = sessionReels.toString()
+    if (stateChanged || !isShowing) {
+      val progress =
+        if (dailyLimit <= 0) 0.35f
+        else (todayTotal.toFloat() / dailyLimit.toFloat()).coerceIn(0f, 1f)
+      val accent = accentColorFor(thresholdLevel)
 
-    // Tint subtle border with threshold accent
-    val bg = container.background as? GradientDrawable
-    bg?.setStroke(dpToPx(1.5f), adjustAlpha(accent, 0.75f))
+      ringView?.updateState(progress = progress, accentColor = accent)
+      if (sessionReels != lastSessionReels) {
+        countText?.text = sessionReels.toString()
+      }
+
+      if (thresholdLevel != lastThresholdLevel) {
+        val bg = container.background as? GradientDrawable
+        bg?.setStroke(dpToPx(1.5f), adjustAlpha(accent, 0.75f))
+      }
+
+      lastSessionReels = sessionReels
+      lastTodayTotal = todayTotal
+      lastDailyLimit = dailyLimit
+      lastThresholdLevel = thresholdLevel
+    }
 
     if (!isShowing) {
       try {
@@ -99,8 +121,8 @@ class OverlayPillController(private val context: Context) {
       GradientDrawable().apply {
         shape = GradientDrawable.RECTANGLE
         cornerRadius = dpToPx(24f).toFloat()
-        setColor(0xEB18221F.toInt()) // Translucent deep slate
-        setStroke(dpToPx(1.5f), 0xCC3D6B5B.toInt())
+        setColor(0xEB18221F.toInt())
+        setStroke(dpToPx(1.5f), 0xCC6BC2A4.toInt())
       }
 
     val container =
@@ -180,12 +202,13 @@ class OverlayPillController(private val context: Context) {
   }
 
   private fun playBumpAnimation(view: View) {
-    val sx = ObjectAnimator.ofFloat(view, View.SCALE_X, 1f, 1.1f, 1f)
-    val sy = ObjectAnimator.ofFloat(view, View.SCALE_Y, 1f, 1.1f, 1f)
+    view.animate().cancel()
+    val sx = ObjectAnimator.ofFloat(view, View.SCALE_X, 1f, 1.12f, 1f)
+    val sy = ObjectAnimator.ofFloat(view, View.SCALE_Y, 1f, 1.12f, 1f)
     AnimatorSet().apply {
       playTogether(sx, sy)
-      duration = 200L
-      interpolator = OvershootInterpolator(1.6f)
+      duration = 180L
+      interpolator = OvershootInterpolator(1.4f)
       start()
     }
   }
@@ -238,7 +261,9 @@ private class CompactRingGlyphView(context: Context) : View(context) {
   private val playPath = Path()
 
   fun updateState(progress: Float, accentColor: Int) {
-    this.progress = progress.coerceIn(0f, 1f)
+    val clamped = progress.coerceIn(0f, 1f)
+    if (this.progress == clamped && this.accentColor == accentColor) return
+    this.progress = clamped
     this.accentColor = accentColor
     arcPaint.color = accentColor
     invalidate()
@@ -259,7 +284,6 @@ private class CompactRingGlyphView(context: Context) : View(context) {
       canvas.drawArc(arcBounds, -90f, sweep, false, arcPaint)
     }
 
-    // Minimal centered play triangle glyph
     val cx = width / 2f
     val cy = height / 2f
     val r = width * 0.19f

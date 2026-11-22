@@ -15,7 +15,7 @@ class ReelGaugeLogicTest {
 
   @Test
   fun `detector ignores non-instagram and respects cooldown`() {
-    val detector = ReelScrollDetector(cooldownMs = 1200L)
+    val detector = ReelScrollDetector(cooldownMs = 1100L)
 
     // Non-Instagram event ignored
     assertFalse(
@@ -35,6 +35,7 @@ class ReelGaugeLogicTest {
         ReelViewportSnapshot(
           packageName = ReelScrollDetector.INSTAGRAM_PACKAGE,
           isReelsContext = true,
+          isScrollEvent = false,
           scrollIndex = 0,
           contentSignature = 101,
           timestampMs = 2000L,
@@ -48,6 +49,7 @@ class ReelGaugeLogicTest {
         ReelViewportSnapshot(
           packageName = ReelScrollDetector.INSTAGRAM_PACKAGE,
           isReelsContext = true,
+          isScrollEvent = true,
           scrollIndex = 1,
           contentSignature = 202,
           timestampMs = 2500L,
@@ -55,14 +57,62 @@ class ReelGaugeLogicTest {
       )
     )
 
-    // After cooldown (1500ms later) with new index -> counted!
+    // After cooldown (1500ms later) with new scrollDeltaY / signature -> counted!
     assertTrue(
       detector.evaluate(
         ReelViewportSnapshot(
           packageName = ReelScrollDetector.INSTAGRAM_PACKAGE,
           isReelsContext = true,
-          scrollIndex = 1,
-          contentSignature = 202,
+          isScrollEvent = true,
+          scrollIndex = 2,
+          scrollDeltaY = -500,
+          contentSignature = 303,
+          timestampMs = 4000L,
+        )
+      )
+    )
+  }
+
+  @Test
+  fun `detector counts scrollY change and content signature change after cooldown`() {
+    val detector = ReelScrollDetector(cooldownMs = 1000L, minScrollDeltaPx = 140)
+
+    // Entry
+    assertFalse(
+      detector.evaluate(
+        ReelViewportSnapshot(
+          packageName = ReelScrollDetector.INSTAGRAM_PACKAGE,
+          isReelsContext = true,
+          scrollY = 0,
+          contentSignature = 111,
+          timestampMs = 1000L,
+        )
+      )
+    )
+
+    // Scroll via scrollY delta
+    assertTrue(
+      detector.evaluate(
+        ReelViewportSnapshot(
+          packageName = ReelScrollDetector.INSTAGRAM_PACKAGE,
+          isReelsContext = true,
+          isScrollEvent = true,
+          scrollY = 1200,
+          contentSignature = 111,
+          timestampMs = 2200L,
+        )
+      )
+    )
+
+    // Content-changed event with new creator signature
+    assertTrue(
+      detector.evaluate(
+        ReelViewportSnapshot(
+          packageName = ReelScrollDetector.INSTAGRAM_PACKAGE,
+          isReelsContext = true,
+          isScrollEvent = false,
+          scrollY = 1200,
+          contentSignature = 222,
           timestampMs = 3500L,
         )
       )
