@@ -2,7 +2,10 @@ name: Build ReelGauge APK
 
 on:
   push:
-    branches: [ main, master ]
+    branches:
+      - '**'
+    tags:
+      - '*'
   workflow_dispatch:
 
 permissions:
@@ -56,7 +59,7 @@ jobs:
       - name: Publish one-click Release APK
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: latest
-          name: ReelGauge Latest APK
-          body: Automated APK build from the latest commit. Click `ReelGauge.apk` below to download and install on Android.
+          tag_name: ${{ github.ref_type == 'tag' && github.ref_name || 'latest' }}
+          name: ReelGauge APK
+          body: Automated APK build. Click `ReelGauge.apk` below to download and install on Android.
           files: dist/ReelGauge.apk
